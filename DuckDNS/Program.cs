@@ -10,11 +10,13 @@ namespace DuckDNS
 {
     class Program
     {
+        // HttpClient is intended to be instantiated once per application, rather than per-use. See Remarks.
+        static readonly HttpClient httpClient = new HttpClient();
         public static int configVersion = 1; 
         public static Settings set = new Settings(); //Used all over the place, so it made sense to only have 1.
+        public static string CurrentIP;
         static void Main(string[] args)
         {
-            
             if (File.Exists("duckdns_config.json") == false)
             {
                 CreateConfig();
@@ -23,7 +25,7 @@ namespace DuckDNS
                 set = JsonConvert.DeserializeObject<Settings>(File.ReadAllText("duckdns_config.json"));
                 if(set.configfileVersion < configVersion)
                 {
-                    Console.WriteLine("Updating Config File, Please Edit to see what changed.");
+                    Console.WriteLine($"{DateTime.Now} Updating Config File, Please Edit to see what changed.");
                     File.WriteAllText("duckdns_config.json", JsonConvert.SerializeObject(set, Formatting.Indented));
                 }
                 else if(set.configfileVersion > configVersion)
@@ -36,26 +38,42 @@ namespace DuckDNS
                     Console.WriteLine(p.Domain);
                 }
             }
-            Console.WriteLine("Scheduling Automatic Updates every " + set.DoUpdateEveryXMinutes + " Minutes.");
-
-            var tmr = new Timer(TimedUpdate, null, 0, set.DoUpdateEveryXMinutes * 1000 * 60); //Update the DNS names every 5 minutes. Minutes*1000=Minutes in Milliseconds. Runs Immediatly.
-            
+            Console.WriteLine($"{DateTime.Now} Scheduling Automatic Updates every " + set.DoUpdateEveryXMinutes + " Minutes.");
+            httpClient.Timeout = new TimeSpan(0, set.DoUpdateEveryXMinutes, 0);
+            var tmr = new Timer(TimedUpdate, null, 0, set.DoUpdateEveryXMinutes * 1000*60); //Update the DNS names every 5 minutes. Minutes*1000=Minutes in Milliseconds. Runs Immediatly.
             Console.WriteLine("Console Ready. type \"help\" for help");
             do
             {
+                
                 var command = Console.ReadLine();
-                command = command.ToLower();
-                if(command == "help") { PrintHelp(); }
-                if(command == "ip") { PrintIPAsync(); }
-                if(command == "update") { ForceUpdate(); }
-                if(command == "exit") { Environment.Exit(0); }
+                try {
+                    if (command != null) {
+                        command = command.ToLower();
+                        if (command == "help") { PrintHelp(); }
+                        if (command == "ip") { PrintIPAsync(); }
+                        if (command == "update") { ForceUpdate(); }
+                        if (command == "exit") { Environment.Exit(0); }
+                    }else{
+                        Console.WriteLine("No hay consola!!");
+                        Thread.Sleep(600000);
+                    }
+                }catch(Exception ex){
+                    Console.WriteLine(ex);
+                    Thread.Sleep(10000);
+                }
             } while (true);
         }
 
-        private static void TimedUpdate(object dummy)
+        private static void TimedUpdate(object stateinfo)
         {
-            Console.WriteLine("Executing Automatic IP Update...");
-            ForceUpdate();
+            Console.WriteLine($"{DateTime.Now} Executing Automatic IP Update...");
+            string LocalCurrentIP = CurrentIP;
+            PrintIPAsync();
+            if (LocalCurrentIP != CurrentIP) {
+                ForceUpdate();
+            }else{
+                Console.WriteLine($"{DateTime.Now} Nothing to update");
+            }
             return;
         }
 
@@ -67,32 +85,31 @@ namespace DuckDNS
             Console.WriteLine("Exit: Closes the updater.");
         }
 
-        static async void PrintIPAsync()
+        static void PrintIPAsync()
         {
             try
             {
-                var httpClient = new HttpClient();
                 httpClient.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("DuckDNS_Updater", "1.0"));
-                var result = await httpClient.GetStringAsync("http://whatismyip.akamai.com/");
+                var result = httpClient.GetStringAsync("http://whatismyip.akamai.com/").Result;
                 Console.WriteLine(result);
+                CurrentIP = result;
             } catch
             {
-                Console.WriteLine("Failed to get IP");
+                Console.WriteLine($"{DateTime.Now} Failed to get IP");
             } 
         }
 
-        static async void ForceUpdate()
+        static void ForceUpdate()
         {
-            Console.WriteLine("Reloading Config...");
+            Console.WriteLine($"{DateTime.Now} Reloading Config...");
             set = JsonConvert.DeserializeObject<Settings>(File.ReadAllText("duckdns_config.json"));
-            Console.WriteLine("Reload Complete!");
+            Console.WriteLine($"{DateTime.Now} Reload Complete!");
             foreach (var p in set.sites)
             {
                 try
                 {
-                    var httpClient = new HttpClient();
                     httpClient.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("DuckDNS_Updater_github_com_pfckrutonium_DuckDNS_Updater", "1.0")); //*Grin*
-                    string query = "https://duckdns.org/update?domains=" + p.Domain + "&token=" + p.Token;
+                    string query = "https://www.duckdns.org/update?domains=" + p.Domain + "&token=" + p.Token;
                     if (p.force_ip_number == "" == false) //Allows overriding the ip's.
                     {
                         query += "&ip=" + p.force_ip_number;
@@ -101,26 +118,28 @@ namespace DuckDNS
                     {
                         query += "&ipv6=" + p.force_ipv6_number;
                     }
-
-                    var result = await httpClient.GetStringAsync(query); 
-                    if(result == "KO")
+                    query+="&verbose=true";
+                    Console.WriteLine($"{DateTime.Now} Update: {query}");
+                    var result = httpClient.GetStringAsync(query).Result;
+                    Console.WriteLine(result);
+                    if(result.Contains("KO"))
                     {
-                        Console.WriteLine("Failed to update IP of " + p.Domain);
-                    } else if (result == "OK")
+                        Console.WriteLine($"{DateTime.Now} Failed to update IP of {0},{1}",p.Domain,result);
+                    } else if (result.Contains("OK"))
                     {
-                        Console.WriteLine("Updated " + p.Domain); //It didn't error, and it didn't return KO, so we are going to assume it worked. Probably not the smartest way.
+                        Console.WriteLine($"{DateTime.Now} Updated " + p.Domain); //It didn't error, and it didn't return KO, so we are going to assume it worked. Probably not the smartest way.
                     }
                     else
                     {
-                        Console.WriteLine("Somthing Happened when updating " + p.Domain + ". Please contact PFCKrutonium on GitHub.");
+                        Console.WriteLine($"{DateTime.Now} Somthing Happened when updating " + p.Domain + ". Please contact PFCKrutonium on GitHub.");
                     }
                 }
-                catch
+                catch(Exception ex)
                 {
-                    Console.WriteLine("Failed to update IP of " + p.Domain);
+                    Console.WriteLine($"{DateTime.Now} Failed to update IP of {0},{1}",p.Domain,ex);
                 }
             }
-            Console.WriteLine("Update Complete.");
+            Console.WriteLine($"{DateTime.Now} Update Complete.");
         }
 
         static void CreateConfig()
